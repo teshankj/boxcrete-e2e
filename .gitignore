@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+.mlflow/
+
+# Generated/intermediate datasets
+data/interim/
+data/processed/
+
+resources/
