@@ -1,3 +1,24 @@
 # Add patterns of files dvc should ignore, which could improve
 # the performance. Learn more at
 # https://dvc.org/doc/user-guide/dvcignore
+
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+.mlflow/
+
+# Generated/intermediate datasets
+data/interim/
+data/processed/
+data/corrections/
+data/model_ready/
+
+# Original Dataset/model paper and etc. 
+resources/
+
+# Ignore the following files for DVC tracking
+
+src/
+tests/

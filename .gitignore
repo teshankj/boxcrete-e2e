@@ -9,5 +9,7 @@ __pycache__/
 data/interim/
 data/processed/
 data/corrections/
+data/model_ready/
 
+# Original Dataset/model paper and etc. 
 resources/
