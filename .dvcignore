@@ -9,6 +9,11 @@ __pycache__/
 
 .mlflow/
 
+# mlflow artifacts and db
+mlruns.db
+mlartifacts/
+mlruns/
+
 # Generated/intermediate datasets
 data/interim/
 data/processed/
@@ -19,6 +24,5 @@ data/model_ready/
 resources/
 
 # Ignore the following files for DVC tracking
-
 src/
 tests/
