@@ -3,6 +3,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+
+import json
+import mlflow
+
+from src.mlflow_config import configure_mlflow
+
 from sklearn.metrics import (
     mean_absolute_error,
     mean_squared_error,
@@ -30,6 +36,8 @@ VAL_PATH = (
     / "processed"
     / "validation.csv"
 )
+
+ARTIFACT_DIR = ROOT / "artifacts" / "strength_v2"
 
 RAW_FEATURES = [
     "Cement (kg/m3)",
@@ -77,6 +85,29 @@ def main():
 
     print(f"Device: {device}")
 
+    # ------------------------------------------------------------
+    # MLflow
+    # ------------------------------------------------------------
+
+    tracking_uri = configure_mlflow()
+
+    print(
+        f"MLflow tracking: {tracking_uri}"
+    )
+
+    # ------------------------------------------------------------
+    # Paths
+    # ------------------------------------------------------------
+
+    ARTIFACT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # ------------------------------------------------------------
+    # Data
+    # ------------------------------------------------------------
+
     train_df = pd.read_csv(
         TRAIN_PATH
     )
@@ -85,16 +116,12 @@ def main():
         VAL_PATH
     )
 
-    X_train, y_train = (
-        dataframe_to_tensors(
-            train_df
-        )
+    X_train, y_train = dataframe_to_tensors(
+        train_df
     )
 
-    X_val, y_val = (
-        dataframe_to_tensors(
-            val_df
-        )
+    X_val, y_val = dataframe_to_tensors(
+        val_df
     )
 
     X_train = X_train.to(device)
@@ -117,120 +144,357 @@ def main():
 
     assert X_train.shape[-1] == 10
 
-    print()
-    print("Training V2...")
-    print()
+    # ------------------------------------------------------------
+    # MLflow Run
+    # ------------------------------------------------------------
 
-    model, likelihood, loo_loss = (
-        fit_strength_v2(
-            X=X_train,
-            Y=y_train,
-            seed=42,
+    with mlflow.start_run(
+        run_name="strength_v2_block_loo"
+    ):
 
-            # Production objective
-            mll_weight=0.5,
-            block_loo_max_iter=150,
-            block_loo_lr=0.1,
+        # --------------------------------------------------------
+        # Tags
+        # --------------------------------------------------------
 
-            # Keep False for the actual
-            # combined-objective reproduction.
-            mll_warmup=False,
+        mlflow.set_tags(
+            {
+                "project": "BOxCrete",
+                "task": "strength_prediction",
+                "model": "strength_gp_v2",
+                "architecture": (
+                    "Multi-Matern+B''+F5_alllog+"
+                    "gated_t+gated_noise"
+                ),
+                "training_objective": (
+                    "block_loo_mll_combined"
+                ),
+                "dataset_split": (
+                    "mix_grouped_70_15_15"
+                ),
+                "target_unit": "psi",
+                "device": str(device),
+            }
         )
-    )
 
-    print()
-    print(
-        f"Final block-LOO loss: "
-        f"{loo_loss:.6f}"
-    )
+        # --------------------------------------------------------
+        # Parameters
+        # --------------------------------------------------------
 
-    # ------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------
+        mlflow.log_params(
+            {
+                "seed": 42,
 
-    mean, std = predict_strength(
-        model,
-        X_val,
-    )
+                "training_rows": len(X_train),
+                "validation_rows": len(X_val),
 
-    mean_np = (
-        mean.detach()
-        .cpu()
-        .numpy()
-    )
+                "input_dimensions": X_train.shape[-1],
 
-    std_np = (
-        std.detach()
-        .cpu()
-        .numpy()
-    )
+                "mll_weight": 0.5,
+                "block_loo_max_iter": 150,
+                "block_loo_lr": 0.1,
 
-    y_np = (
-        y_val.detach()
-        .cpu()
-        .numpy()
-        .ravel()
-    )
+                "mll_warmup": False,
 
-    mae = mean_absolute_error(
-        y_np,
-        mean_np,
-    )
+                "gate_tau": 0.1,
 
-    rmse = np.sqrt(
-        mean_squared_error(
+                "engineered_features": 7,
+
+                "dtype": "float64",
+            }
+        )
+
+        # --------------------------------------------------------
+        # Training
+        # --------------------------------------------------------
+
+        print()
+        print("Training V2...")
+        print()
+
+        model, likelihood, loo_loss = (
+            fit_strength_v2(
+                X=X_train,
+                Y=y_train,
+                seed=42,
+
+                mll_weight=0.5,
+                block_loo_max_iter=150,
+                block_loo_lr=0.1,
+
+                mll_warmup=False,
+            )
+        )
+
+        print()
+        print(
+            f"Final block-LOO loss: "
+            f"{loo_loss:.6f}"
+        )
+
+        mlflow.log_metric(
+            "block_loo_loss",
+            float(loo_loss),
+        )
+
+        # --------------------------------------------------------
+        # Validation
+        # --------------------------------------------------------
+
+        mean, std = predict_strength(
+            model,
+            X_val,
+        )
+
+        mean_np = (
+            mean.detach()
+            .cpu()
+            .numpy()
+            .ravel()
+        )
+
+        std_np = (
+            std.detach()
+            .cpu()
+            .numpy()
+            .ravel()
+        )
+
+        y_np = (
+            y_val.detach()
+            .cpu()
+            .numpy()
+            .ravel()
+        )
+
+        mae = mean_absolute_error(
             y_np,
             mean_np,
         )
-    )
 
-    r2 = r2_score(
-        y_np,
-        mean_np,
-    )
+        rmse = np.sqrt(
+            mean_squared_error(
+                y_np,
+                mean_np,
+            )
+        )
 
-    lower = (
-        mean_np
-        - 1.96 * std_np
-    )
+        r2 = r2_score(
+            y_np,
+            mean_np,
+        )
 
-    upper = (
-        mean_np
-        + 1.96 * std_np
-    )
+        lower = (
+            mean_np
+            - 1.96 * std_np
+        )
 
-    coverage = np.mean(
-        (y_np >= lower)
-        & (y_np <= upper)
-    )
+        upper = (
+            mean_np
+            + 1.96 * std_np
+        )
+
+        coverage = np.mean(
+            (y_np >= lower)
+            & (y_np <= upper)
+        )
+
+        mean_sigma = float(
+            std_np.mean()
+        )
+
+        median_sigma = float(
+            np.median(std_np)
+        )
+
+        # --------------------------------------------------------
+        # Print
+        # --------------------------------------------------------
+
+        print()
+        print("=" * 80)
+        print("Validation Results")
+        print("=" * 80)
+
+        print(
+            f"MAE  : {mae:.2f} psi"
+        )
+
+        print(
+            f"RMSE : {rmse:.2f} psi"
+        )
+
+        print(
+            f"R²   : {r2:.4f}"
+        )
+
+        print(
+            f"Mean predictive σ : "
+            f"{mean_sigma:.2f} psi"
+        )
+
+        print(
+            f"Median predictive σ : "
+            f"{median_sigma:.2f} psi"
+        )
+
+        print(
+            f"95% coverage      : "
+            f"{coverage:.4f}"
+        )
+
+        # --------------------------------------------------------
+        # MLflow metrics
+        # --------------------------------------------------------
+
+        mlflow.log_metrics(
+            {
+                "val_mae_psi": float(mae),
+                "val_rmse_psi": float(rmse),
+                "val_r2": float(r2),
+                "val_mean_predictive_sigma_psi": (
+                    mean_sigma
+                ),
+                "val_median_predictive_sigma_psi": (
+                    median_sigma
+                ),
+                "val_95_coverage": float(
+                    coverage
+                ),
+            }
+        )
+
+        # --------------------------------------------------------
+        # Save model
+        # --------------------------------------------------------
+
+        model_path = (
+            ARTIFACT_DIR
+            / "model_state.pt"
+        )
+
+        torch.save(
+            model.state_dict(),
+            model_path,
+        )
+
+        # --------------------------------------------------------
+        # Validation predictions
+        # --------------------------------------------------------
+
+        predictions_df = pd.DataFrame(
+            {
+                "y_true_psi": y_np,
+                "y_pred_psi": mean_np,
+                "predictive_std_psi": std_np,
+                "lower_95_psi": lower,
+                "upper_95_psi": upper,
+            }
+        )
+
+        predictions_path = (
+            ARTIFACT_DIR
+            / "validation_predictions.csv"
+        )
+
+        predictions_df.to_csv(
+            predictions_path,
+            index=False,
+        )
+
+        # --------------------------------------------------------
+        # Metadata
+        # --------------------------------------------------------
+
+        metadata = {
+            "model": "BOxCrete Strength GP V2",
+            "variant": (
+                "B''+F5_alllog+gated_t+"
+                "gated_noise+maxscale_zeromean"
+            ),
+            "seed": 42,
+            "training_rows": len(X_train),
+            "validation_rows": len(X_val),
+            "input_dimensions": 10,
+            "target": "Strength (psi)",
+
+            "objective": {
+                "mll_weight": 0.5,
+                "block_loo_max_iter": 150,
+                "block_loo_lr": 0.1,
+                "mll_warmup": False,
+            },
+
+            "metrics": {
+                "block_loo_loss": float(
+                    loo_loss
+                ),
+                "mae_psi": float(mae),
+                "rmse_psi": float(rmse),
+                "r2": float(r2),
+                "mean_predictive_sigma_psi": (
+                    mean_sigma
+                ),
+                "median_predictive_sigma_psi": (
+                    median_sigma
+                ),
+                "coverage_95": float(
+                    coverage
+                ),
+            },
+
+            "raw_features": RAW_FEATURES,
+        }
+
+        metadata_path = (
+            ARTIFACT_DIR
+            / "metadata.json"
+        )
+
+        with open(
+            metadata_path,
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(
+                metadata,
+                f,
+                indent=2,
+            )
+
+        # --------------------------------------------------------
+        # MLflow artifacts
+        # --------------------------------------------------------
+
+        mlflow.log_artifact(
+            str(model_path),
+            artifact_path="strength_v2",
+        )
+
+        mlflow.log_artifact(
+            str(predictions_path),
+            artifact_path="strength_v2",
+        )
+
+        mlflow.log_artifact(
+            str(metadata_path),
+            artifact_path="strength_v2",
+        )
 
     print()
     print("=" * 80)
-    print("Validation Results")
+    print("V2 training + MLflow logging complete")
     print("=" * 80)
 
+    print()
     print(
-        f"MAE  : {mae:.2f} psi"
+        f"Model artifact:"
+        f"\n  {model_path}"
     )
 
     print(
-        f"RMSE : {rmse:.2f} psi"
+        f"\nMLflow tracking:"
+        f"\n  {tracking_uri}"
     )
-
-    print(
-        f"R²   : {r2:.4f}"
-    )
-
-    print(
-        f"Mean predictive σ : "
-        f"{std_np.mean():.2f} psi"
-    )
-
-    print(
-        f"95% coverage      : "
-        f"{coverage:.4f}"
-    )
-
 
 if __name__ == "__main__":
     main()
