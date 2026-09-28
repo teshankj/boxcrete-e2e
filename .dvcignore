@@ -22,6 +22,7 @@ data/model_ready/
 
 # Original Dataset/model paper and etc. 
 resources/
+README.md
 
 # Ignore the following files for DVC tracking
 src/
